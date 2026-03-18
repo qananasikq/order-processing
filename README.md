@@ -1,55 +1,53 @@
-````markdown
 # Intake Orders Service
 
-Сервис работает между приёмом заказа и складом. API принимает заказ, чистит входные данные, проверяет базовые вещи и кладёт задачу в очередь.
-Дальше worker забирает заказ и решает, что с ним делать.
+[![FastAPI](https://img.shields.io/badge/FastAPI-green?style=flat-square)](https://fastapi.tiangolo.com/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-336791?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io/)
 
-- отправить сразу в обработку;
-- отложить и попробовать позже, если данные ещё не готовы;
-- отправить в manual_review, если заказ выбивается из нормального потока;
-- завершить в failed, если повторять смысла нет.
+Сервис стоит между приёмом заказа и складом.  
+API принимает заказ, проверяет входные данные и кладёт его в очередь.  
+Дальше worker забирает задачу и решает, что с ней делать.
 
-## Что есть в логике
+## Как это работает
 
-- дубли позиций объединяются ещё на входе;
-- сумма пересчитывается и сверяется с запросом;
-- крупные и хрупкие заказы не идут в автопоток;
-- retry делается через отложенную очередь в Redis;
-- обработка завязана на конкретный intake, а не просто фоновые задачи.
+- заказ принимается и проверяется на входе
+- позиции нормализуются и объединяются
+- сумма пересчитывается
+- заказ кладётся в очередь
+- worker обрабатывает его отдельно
 
-## Статусы заказа
+## Что происходит с заказом
 
-- `queued` заказ принят и ждёт обработки  
-- `processing` заказ взят в работу  
-- `done` обработка прошла успешно  
-- `failed` заказ не удалось обработать  
-- `manual_review` требуется ручная проверка  
+### На входе
 
-## Логика обработки
+- пустой заказ не принимается
+- одинаковые позиции объединяются
+- у одной позиции не может быть разных цен
+- total должен совпадать с расчётом
 
-### API
+### В обработке
 
-- пустой заказ не принимается  
-- одинаковые позиции объединяются  
-- одна позиция не может иметь разные цены  
-- слишком раздробленные заказы отсекаются  
-- total должен совпадать с пересчитанной суммой  
+- `preorder-*` → отложенный retry
+- `blocked-*` → сразу failed
+- крупные или хрупкие → manual_review
 
-### Worker
 
-- `preorder-*` отправляется в отложенный retry  
-- `blocked-*` сразу уходит в failed  
-- крупные или хрупкие заказы идут в manual_review  
+
+## Статусы
+
+- `queued`
+- `processing`
+- `done`
+- `failed`
+- `manual_review`
 
 ## Стек
 
-- FastAPI  
-- PostgreSQL  
-- Redis (очередь, retry, блокировки)  
-- SQLAlchemy async  
-- Alembic  
-
-RabbitMQ не используется, Redis закрывает задачу без лишней инфраструктуры.
+- FastAPI
+- PostgreSQL
+- Redis
+- SQLAlchemy (async)
+- Alembic
 
 ## Структура
 
@@ -71,9 +69,48 @@ orders-service/
 ├── tests/
 ├── alembic/
 └── docker-compose.yml
-````
+```
 
-## Пример запроса
+## Переменные окружения
+
+```env
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/orders
+POSTGRES_USER=orders
+POSTGRES_PASSWORD=changeme
+POSTGRES_DB=orders
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+
+# App
+APP_ENV=dev
+LOG_LEVEL=INFO
+WORKER_CONCURRENCY=4
+```
+
+Подробнее в `.env.example`.
+
+## Запуск
+
+```powershell
+docker-compose up --build
+```
+
+API доступен: http://localhost:8000  
+Docs: http://localhost:8000/docs
+
+### Health Check
+
+```
+GET /health → 200 OK
+```
+
+Сервис готов к работе, когда база и Redis подключены.
+
+## Примеры
+
+### Запрос
 
 ```json
 {
@@ -87,37 +124,39 @@ orders-service/
 }
 ```
 
-## Что произойдёт
+### Что произойдёт
 
-1. позиции `book` объединятся в одну с qty 3
-2. сумма пересчитается
-3. заказ попадёт в очередь `orders:ready`
-4. worker отправит заказ в delayed retry из-за `preorder-marker`
+1. API нормализует названия, схлопнет `book` в одну позицию (qty 3)
+2. Пересчитает сумму до 300 + 40 = 340 → совпадает ✓
+3. Положит заказ в очередь со статусом `queued`
+4. Worker обнаружит `preorder-marker` и отложит заказ
 
-## Запуск
-
-```bash
-docker-compose up --build
-```
-
-* API: [http://localhost:8000](http://localhost:8000)
-* Docs: [http://localhost:8000/docs](http://localhost:8000/docs)
-* Redoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
-## Пример ответа
+### Ответ
 
 ```json
 {
   "id": 12,
   "customer": "ops@northwind.example",
   "items": [
-    {"name": "book", "price": 100.0, "qty": 3}
+    {"name": "book", "price": 100.0, "qty": 3},
+    {"name": "preorder-marker", "price": 40.0, "qty": 1}
   ],
-  "total": 300.0,
+  "total": 340.0,
   "status": "queued",
   "tries": 0,
-  "error": null,
   "created_at": "2026-03-18T09:15:00Z",
   "updated_at": "2026-03-18T09:15:00Z"
 }
 ```
+
+## Тесты
+
+```powershell
+pytest tests/
+```
+
+## Лицензия
+
+MIT
+
+
