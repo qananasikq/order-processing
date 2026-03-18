@@ -1,0 +1,33 @@
+# env
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# virtualenv
+.venv/
+venv/
+
+# ide
+.idea/
+.vscode/
+
+# logs
+*.log
+
+# build
+dist/
+build/
+
+# docker
+*.pid
+
+# db 
+*.sqlite3
+
+# system
+.DS_Store
+Thumbs.db
